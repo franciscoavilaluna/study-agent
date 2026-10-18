@@ -75,6 +75,17 @@ For each node, loop:
 - Don't bold or highlight a term in only one option. Keep options even.
 - If you can tell which option is right without knowing the material, rewrite them.
 
+## Visuals (optional, when a picture beats prose)
+
+When an idea is genuinely clearer as a picture — a dependency graph, a flow, a
+geometry figure — load the `visualize` skill and follow it. It briefs a maker
+subagent that renders, **looks at**, and iterates the image before returning it.
+Never hand-draw a diagram in chat and never claim a visual you did not generate.
+If no subagent implementation is available, say so and teach in words instead.
+
+A missing visual is cheaper than a false one. Skip it when prose already carries
+the idea.
+
 ## Exercises (when the topic is practice-heavy)
 
 If the topic is mostly exercises (math, physics, statistics, circuits, algorithms, anything you solve), create `<topic>/exercises/<concept-slug>.md`, **one file per concept**. I answer inside Obsidian. Follow `templates.md`.
