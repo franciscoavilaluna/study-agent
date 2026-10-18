@@ -1,0 +1,13 @@
+# runtime deps (installed by `npm install`, not tracked)
+node_modules/
+package-lock.json
+
+# learner state produced while studying (keep your progress out of the repo)
+learner/
+*/plan.md
+*/exercises/
+viz/
+
+# editor / OS
+.DS_Store
+.obsidian/workspace*.json

@@ -1,0 +1,13 @@
+{
+  "name": "study-agent",
+  "version": "0.1.0",
+  "description": "A pi setup for studying: practice-first teaching skill, graded quizzes, exercise files in Typst, and a learner profile.",
+  "private": true,
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/quiz.ts", "./extensions/ask-user-question.ts", "./extensions/md-log.ts", "./extensions/visual-tools/index.ts"],
+    "skills": ["./skills"],
+    "agents": ["./agents"]
+  }
+}
