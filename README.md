@@ -21,37 +21,78 @@ Derived from [amosblomqvist/learn](https://github.com/amosblomqvist/learn), exte
 
 ## Install
 
-```bash
-# 1. runtime deps for the diagram tools
-npm install                          # in this repo
-cd extensions/visual-tools && npm install && cd -
-
-# 2. (once) a Chrome for mermaid rendering
-cd extensions/visual-tools && node node_modules/puppeteer/install.mjs && cd -
-```
-
-Then register the package with pi:
+### 1. Install the package from git
 
 ```bash
-pi install /home/pacosmosis/.config/study-agent
-pi list          # should show study-agent
+pi install git:github.com/franciscoavilaluna/study-agent
+pi list          # should list study-agent
 ```
 
-`pi install` writes an entry to `~/.pi/agent/settings.json`, so the skill and extensions load **from every directory you launch pi in**.
+This clones into `~/.pi/agent/git/github.com/franciscoavilaluna/study-agent` and adds an entry to `~/.pi/agent/settings.json`, so the skills and extensions load **from every directory you launch pi in**. Update later with `pi update --extensions`.
 
-> Alternative without installing: launch with explicit paths.
-> ```bash
-> pi --skill ~/.config/study-agent/skills/study \
->    -e ~/.config/study-agent/extensions/quiz.ts \
->    -e ~/.config/study-agent/extensions/ask-user-question.ts \
->    -e ~/.config/study-agent/extensions/md-log.ts
-> ```
+### 2. Subagents (required for visuals)
+
+The `visualize` skill spawns `mermaid-maker` / `svg-maker`. That needs a subagent implementation:
+
+```bash
+pi install git:github.com/amosblomqvist/pi-interactive-subagents
+sudo pacman -S tmux          # or your package manager; tmux is required
+```
+
+**Subagents only work when pi runs inside tmux.** Launch it as:
+
+```bash
+cd ~/learn && tmux new -A -s pi 'pi'
+```
+
+Without tmux, spawning fails with `Subagents require tmux` — teaching still works, you just get no diagrams.
+
+#### Register the agent definitions
+
+Agent files are discovered from `~/.pi/agent/agents/` or a project `.pi/agents/`, **not** from a package's `agents/` folder. Copy them once after installing:
+
+```bash
+mkdir -p ~/.pi/agent/agents
+cp ~/.pi/agent/git/github.com/franciscoavilaluna/study-agent/agents/*.md ~/.pi/agent/agents/
+```
+
+Re-run that after updating the package if the agent definitions changed.
+
+### 3. Runtime deps for the diagram tools
+
+Their npm dependencies are not committed. Install them inside the clone:
+
+```bash
+cd ~/.pi/agent/git/github.com/franciscoavilaluna/study-agent/extensions/visual-tools
+npm install
+node node_modules/puppeteer/install.mjs   # fetches a Chrome for Mermaid rendering
+```
+
+SVG rendering needs `rsvg-convert` (librsvg) with ImageMagick's `magick` as fallback:
+
+```bash
+sudo pacman -S librsvg imagemagick
+```
+
+### 4. Check it
+
+```bash
+cd /tmp && pi -p --no-session "List the skills and non-builtin tools available to you."
+```
+
+Expected: skills `study`, `visualize`; tools include `quiz`, `ask_user_question`, `subagent`.
+
+### Models
+
+The agent definitions ship pointing at `deepseek/deepseek-flash`. Paid OpenRouter models (Claude, etc.) fail with `402 billing_error` when the balance is low — if you hit that, either add credits or edit `model:` in `~/.pi/agent/agents/*.md`. Model IDs are per-machine, which is why this is the one thing you may need to change.
+
+> `researcher` is granted only `bash`. `web_search` / `web_fetch` are separate pi extensions that are not bundled with pi; install one and add it to the agent's `tools:` line to give it real web access. Until then it reports that it has no search tool rather than inventing sources.
 
 ## Use it
 
 ```bash
-cd ~/learn       # anywhere you want your notes to land
-pi
+cd ~/learn                                  # anywhere you want your notes to land
+tmux new -A -s pi 'pi'                      # tmux is required for subagents
 ```
 
 Then:
@@ -91,9 +132,20 @@ The agent writes `<topic>/exercises/<concept>.md` with Typst cards. Fill in `**M
 
 ## Requirements
 
-- pi 1.3+
-- Node 20+ for the diagram tools (`rsvg-convert` for SVG; Chrome — system or puppeteer-managed — for Mermaid)
-- Optional: a subagent implementation for `researcher` / `mermaid-maker` / `svg-maker`. Without it the main session still teaches; you just lose web verification and generated diagrams.
+- pi 1.3+ (this repo uses the `@earendil-works/` package scope; pi aliases the older `@mariozechner/` scope, which is what `pi-interactive-subagents` imports)
+- Node 20+ for the diagram tools
+- `tmux` and [pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents) for subagents (diagrams, web research)
+- `rsvg-convert` (librsvg) and/or ImageMagick for SVG; Chrome — system or puppeteer-managed — for Mermaid
+
+Without the subagent layer the main session still teaches and quizzes; you just lose generated diagrams and fact-checking by `researcher`.
+
+## Known limitations
+
+- **Subagents need tmux.** They spawn in tmux panes; a plain terminal session fails with `Subagents require tmux`.
+- **`researcher` has no web tools by default.** `web_search`/`web_fetch` are not bundled with pi. It is granted `bash` only, so it will say it cannot search rather than invent a source. This is deliberate: the skill forbids fabricating sources.
+- **Model IDs are machine-specific.** Agents ship on `deepseek/deepseek-flash` because it is cheap and works without credit. Paid models fail with `402 billing_error` on a low balance.
+- **Agent files are copied, not linked.** They live in `~/.pi/agent/agents/`, so a package update needs the `cp` from step 2 repeated.
+- **Learner state is written to the cwd**, not to the package. Launch pi from the folder where you want your notes.
 
 ## Customizing
 

@@ -1,8 +1,8 @@
 ---
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
-tools: web_search, web_fetch, bash
-model: openrouter/anthropic/claude-haiku-4.5
+tools: bash
+model: deepseek/deepseek-flash
 thinking: medium
 system-prompt: append
 auto-exit: true
