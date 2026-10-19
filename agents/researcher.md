@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
-tools: bash
+tools: web_search, web_fetch
 model: deepseek/deepseek-flash
 thinking: medium
 system-prompt: append

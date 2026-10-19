@@ -19,6 +19,7 @@ It works for any subject: quantitative ones get exercises and error fingerprints
 | `extensions/md-log.ts` | Mirrors the session to a `.md` file you read rendered in Obsidian |
 | `extensions/visual-tools/` | `write/edit/render_{mermaid,svg}` tools for the visual subagents |
 | `agents/researcher.md` | Verifies facts on the web so the teacher can say "I'm not sure" honestly |
+| `extensions/web-tools.ts` | `web_search` + `web_fetch` for that researcher: keyless, zero-dependency, no API key |
 | `agents/mermaid-maker.md`, `agents/svg-maker.md` | Draw one diagram, look at the PNG, iterate, publish to `viz/` |
 
 ## Install
@@ -82,13 +83,13 @@ sudo pacman -S librsvg imagemagick
 cd /tmp && pi -p --no-session "List the skills and non-builtin tools available to you."
 ```
 
-Expected: skills `study`, `visualize`; tools include `quiz`, `ask_user_question`, `subagent`.
+Expected: skills `study`, `visualize`; tools include `quiz`, `ask_user_question`, `web_search`, `web_fetch`, `subagent`.
 
 ### Models
 
 The agent definitions ship pointing at `deepseek/deepseek-flash`. Paid OpenRouter models (Claude, etc.) fail with `402 billing_error` when the balance is low — if you hit that, either add credits or edit `model:` in `~/.pi/agent/agents/*.md`. Model IDs are per-machine, which is why this is the one thing you may need to change.
 
-> `researcher` is granted only `bash`. `web_search` / `web_fetch` are separate pi extensions that are not bundled with pi; install one and add it to the agent's `tools:` line to give it real web access. Until then it reports that it has no search tool rather than inventing sources.
+> `researcher` gets `web_search` and `web_fetch` from its own bundled extension, so it works on a fresh install with no API key and no MCP server. `web_search` reads DuckDuckGo's HTML endpoint and `web_fetch` strips a page down to text; both use Node's built-in `fetch`. If a machine blocks those endpoints, the researcher says the search failed instead of inventing a source.
 
 ## Use it
 
@@ -163,7 +164,7 @@ Without the subagent layer the main session still teaches and quizzes; you just 
 ## Known limitations
 
 - **Subagents need tmux.** They spawn in tmux panes; a plain terminal session fails with `Subagents require tmux`.
-- **`researcher` has no web tools by default.** `web_search`/`web_fetch` are not bundled with pi. It is granted `bash` only, so it will say it cannot search rather than invent a source. This is deliberate: the skill forbids fabricating sources.
+- **`web_search` depends on DuckDuckGo's markup.** It is keyless by design (a key would make the package unusable for the next person who clones it), so if the endpoint changes or rate-limits, the search returns an error rather than results. `web_fetch` is independent of it and keeps working. Neither tool opens PDFs.
 - **Model IDs are machine-specific.** Agents ship on `deepseek/deepseek-flash` because it is cheap and works without credit. Paid models fail with `402 billing_error` on a low balance.
 - **Agent files are copied, not linked.** They live in `~/.pi/agent/agents/`, so a package update needs the `cp` from step 2 repeated.
 - **Learner state is written to the cwd**, not to the package. Launch pi from the folder where you want your notes.
