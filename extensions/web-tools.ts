@@ -7,9 +7,14 @@
  *   • web_search — DuckDuckGo's HTML endpoint, parsed into title / URL / snippet.
  *   • web_fetch  — downloads one URL and reduces it to readable text.
  *
+ * The machinery lives in `web-tools-core.ts` (no imports, unit-tested by
+ * `tests/web-tools.test.ts`); this file is only the pi-facing shell: schemas,
+ * prompts, and the response shape.
+ *
  * Design notes:
- *   - Zero dependencies: Node's built-in `fetch` does the network work, so the
- *     tools work on a fresh machine with nothing installed but pi.
+ *   - Zero dependencies apart from typebox, which pi already provides. Node's
+ *     built-in `fetch` does the network work, so the tools run on a fresh
+ *     machine with nothing installed but pi.
  *   - Keyless on purpose. A search API key would make the package unusable for
  *     anyone who clones it, which is exactly the failure mode this replaces.
  *   - `web_fetch` only accepts http(s) and refuses loopback / private hosts, so
@@ -21,233 +26,34 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { fileURLToPath } from "node:url";
+import {
+	clipText,
+	extractTitle,
+	fetchPage,
+	formatHits,
+	htmlToText,
+	MAX_BYTES,
+	normalizeQuery,
+	parseHttpUrl,
+	searchWeb,
+} from "./web-tools-core.ts";
 
-const USER_AGENT =
-	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36";
-const TIMEOUT_MS = 20_000;
-const MAX_BYTES = 3_000_000;
+const FAILURE_HINT = "Report that the fetch failed and why; do not invent the page's contents.";
 
-interface SearchHit {
-	title: string;
-	url: string;
-	snippet?: string;
+function isHtml(contentType: string, body: string): boolean {
+	return /html|xml/i.test(contentType) || /^\s*<(!doctype|html)/i.test(body.slice(0, 512));
 }
 
-// ── text helpers ────────────────────────────────────────────────────────────
-
-const ENTITIES: Record<string, string> = {
-	amp: "&",
-	lt: "<",
-	gt: ">",
-	quot: '"',
-	apos: "'",
-	nbsp: " ",
-	hellip: "…",
-	mdash: "—",
-	ndash: "–",
-	rsquo: "'",
-	lsquo: "'",
-	rdquo: '"',
-	ldquo: '"',
-};
-
-function decodeEntities(input: string): string {
-	return input
-		.replace(/&#x([0-9a-f]+);/gi, (_, hex) => safeFromCodePoint(parseInt(hex, 16)))
-		.replace(/&#(\d+);/g, (_, dec) => safeFromCodePoint(Number(dec)))
-		.replace(/&([a-z][a-z0-9]*);/gi, (whole, name) => ENTITIES[name.toLowerCase()] ?? whole);
+function looksLikePdf(contentType: string, body: string): boolean {
+	return /application\/pdf/i.test(contentType) || body.slice(0, 5) === "%PDF-";
 }
 
-function safeFromCodePoint(code: number): string {
-	if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return "";
-	try {
-		return String.fromCodePoint(code);
-	} catch {
-		return "";
-	}
-}
-
-/** HTML → readable text. Removes scripts/styles, keeps block boundaries. */
-function htmlToText(html: string): string {
-	let out = html
-		.replace(/<!--[\s\S]*?-->/g, " ")
-		.replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, " ")
-		.replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6]|\/section|\/article)>/gi, "\n")
-		.replace(/<li[^>]*>/gi, "\n- ")
-		.replace(/<[^>]+>/g, " ");
-
-	out = decodeEntities(out);
-	out = out.replace(/[ \t\u00a0]+/g, " ").replace(/ *\n */g, "\n");
-	out = out.replace(/\n{3,}/g, "\n\n");
-	return out.trim();
-}
-
-function firstMatch(html: string, pattern: RegExp): string | undefined {
-	const m = pattern.exec(html);
-	return m?.[1] ? htmlToText(m[1]) : undefined;
-}
-
-// ── network helpers ─────────────────────────────────────────────────────────
-
-function isPrivateHost(hostname: string): boolean {
-	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-	if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
-	if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
-	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-	if (!v4) return false;
-	const octets = v4.slice(1).map(Number);
-	if (octets.some((n) => n > 255)) return true;
-	const [a, b] = octets;
-	return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
-
-function parseHttpUrl(raw: string): URL {
-	let candidate = raw.trim();
-	if (!/^[a-z][a-z0-9+.-]*:/i.test(candidate)) candidate = `https://${candidate}`;
-	const url = new URL(candidate);
-	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		throw new Error(`unsupported scheme "${url.protocol}" — only http and https are allowed`);
-	}
-	if (isPrivateHost(url.hostname)) {
-		throw new Error(`refusing to fetch local or private address "${url.hostname}"`);
-	}
-	return url;
-}
-
-interface Fetched {
-	url: string;
-	status: number;
-	contentType: string;
-	body: string;
-	truncated: boolean;
-}
-
-async function fetchPage(url: URL, signal?: AbortSignal): Promise<Fetched> {
-	const timeout = AbortSignal.timeout(TIMEOUT_MS);
-	const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-	const response = await fetch(url, {
-		redirect: "follow",
-		signal: combined,
-		headers: {
-			"user-agent": USER_AGENT,
-			accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
-			"accept-language": "es,en;q=0.8",
-		},
-	});
-
-	const contentType = response.headers.get("content-type") ?? "";
-	const reader = response.body?.getReader();
-	if (!reader) return { url: response.url, status: response.status, contentType, body: "", truncated: false };
-
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	let truncated = false;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (!value) continue;
-		total += value.byteLength;
-		if (total > MAX_BYTES) {
-			chunks.push(value.subarray(0, Math.max(0, value.byteLength - (total - MAX_BYTES))));
-			truncated = true;
-			await reader.cancel().catch(() => undefined);
-			break;
-		}
-		chunks.push(value);
-	}
-
-	const body = new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
-	return { url: response.url || url.toString(), status: response.status, contentType, body, truncated };
-}
-
-// ── DuckDuckGo parsing ──────────────────────────────────────────────────────
-
-function resolveDdgHref(href: string): string | undefined {
-	const absolute = href.startsWith("//") ? `https:${href}` : href;
-	try {
-		const url = new URL(absolute, "https://duckduckgo.com");
-		const target = url.searchParams.get("uddg");
-		if (target) return decodeURIComponent(target);
-		if (/^https?:\/\//i.test(url.toString()) && !/(^|\.)duckduckgo\.com$/i.test(url.hostname)) return url.toString();
-		return undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function parseDdgHtml(html: string): SearchHit[] {
-	const hits: SearchHit[] = [];
-	const linkPattern = /<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-	const positions: Array<{ end: number; title: string; url: string }> = [];
-
-	for (let m = linkPattern.exec(html); m; m = linkPattern.exec(html)) {
-		const url = resolveDdgHref(decodeEntities(m[1]));
-		if (!url) continue;
-		positions.push({ end: m.index + m[0].length, title: htmlToText(m[2]), url });
-	}
-
-	for (const [i, entry] of positions.entries()) {
-		const windowEnd = positions[i + 1]?.end ?? html.length;
-		const slice = html.slice(entry.end, windowEnd);
-		const snippetHtml = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(slice)?.[1]
-			?? /<div[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(slice)?.[1];
-		hits.push({ title: entry.title, url: entry.url, snippet: snippetHtml ? htmlToText(snippetHtml) : undefined });
-	}
-	return hits;
-}
-
-function parseDdgLite(html: string): SearchHit[] {
-	const hits: SearchHit[] = [];
-	const pattern = /<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-	for (let m = pattern.exec(html); m; m = pattern.exec(html)) {
-		const url = resolveDdgHref(decodeEntities(m[1]));
-		if (!url) continue;
-		hits.push({ title: htmlToText(m[2]), url, snippet: undefined });
-	}
-	if (hits.length === 0) {
-		const plain = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([^<]{3,120})<\/a>/gi;
-		for (let m = plain.exec(html); m; m = plain.exec(html)) {
-			const url = decodeEntities(m[1]);
-			if (/duckduckgo\.com/i.test(url)) continue;
-			hits.push({ title: htmlToText(m[2]), url });
-		}
-	}
-	return hits;
-}
-
-async function search(query: string, limit: number, signal?: AbortSignal): Promise<SearchHit[]> {
-	const encoded = encodeURIComponent(query);
-	const attempts: Array<{ url: string; parse: (html: string) => SearchHit[] }> = [
-		{ url: `https://html.duckduckgo.com/html/?q=${encoded}`, parse: parseDdgHtml },
-		{ url: `https://lite.duckduckgo.com/lite/?q=${encoded}`, parse: parseDdgLite },
-	];
-
-	let lastError = "";
-	for (const attempt of attempts) {
-		try {
-			const page = await fetchPage(new URL(attempt.url), signal);
-			if (page.status !== 200) {
-				lastError = `HTTP ${page.status} from ${new URL(attempt.url).hostname}`;
-				continue;
-			}
-			const hits = attempt.parse(page.body).filter((hit, index, all) => all.findIndex((other) => other.url === hit.url) === index);
-			if (hits.length > 0) return hits.slice(0, limit);
-			lastError = `no results parsed from ${new URL(attempt.url).hostname} (the markup may have changed)`;
-		} catch (error) {
-			lastError = error instanceof Error ? error.message : String(error);
-		}
-	}
-	throw new Error(`search failed: ${lastError}`);
-}
-
-function formatHits(hits: SearchHit[], query: string): string {
-	if (hits.length === 0) return `No results for "${query}".`;
-	const lines = hits.map((hit, index) => {
-		const head = `${index + 1}. ${hit.title}`;
-		const snippet = hit.snippet ? `\n   ${hit.snippet}` : "";
-		return `${head}\n   ${hit.url}${snippet}`;
-	});
-	return `${hits.length} result(s) for "${query}":\n\n${lines.join("\n\n")}`;
+function statusMessage(url: string, status: number): string {
+	if (status === 401 || status === 403) return `HTTP ${status} for ${url} — the site blocks non-browser clients. Drop this source or find a mirror.`;
+	if (status === 429) return `HTTP 429 for ${url} — rate limited. Wait, or drop this source.`;
+	if (status === 404 || status === 410) return `HTTP ${status} for ${url} — the page does not exist. Check the URL; do not cite it.`;
+	if (status >= 500) return `HTTP ${status} for ${url} — the site is failing. Drop this source or try again later.`;
+	return `HTTP ${status} for ${url} — the page is not readable. Drop this source.`;
 }
 
 // ── extension ───────────────────────────────────────────────────────────────
@@ -305,13 +111,13 @@ export default function webToolsExtension(pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, signal) {
-			const query = params.query.trim();
+			const query = normalizeQuery(params.query);
 			if (!query) {
 				return { content: [{ type: "text", text: "ERROR: empty query." }], details: { query, results: 0 } };
 			}
 			const limit = Math.min(Math.max(Math.round(params.max_results ?? 8), 1), 20);
 			try {
-				const hits = await search(query, limit, signal);
+				const hits = await searchWeb(query, limit, { signal });
 				return {
 					content: [{ type: "text", text: formatHits(hits, query) }],
 					details: { query, results: hits.length, hits },
@@ -319,7 +125,12 @@ export default function webToolsExtension(pi: ExtensionAPI) {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
-					content: [{ type: "text", text: `ERROR: ${message}\nReport that the search failed; do not invent sources.` }],
+					content: [
+						{
+							type: "text",
+							text: `ERROR: ${message}\nReport that the search failed; do not invent sources. Try a shorter or differently phrased query once.`,
+						},
+					],
 					details: { query, results: 0, error: message },
 				};
 			}
@@ -330,7 +141,7 @@ export default function webToolsExtension(pi: ExtensionAPI) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Download one URL and return its readable text (HTML is stripped to plain text). Only http and https; local and private addresses are refused.",
+			"Download one URL and return its readable text (HTML is stripped to plain text, page chrome removed). Only http and https; local and private addresses are refused.",
 		promptSnippet: "Read the actual text of a page so a citation is backed by what the page says",
 		promptGuidelines: [
 			"Open a source with web_fetch before citing it.",
@@ -354,38 +165,59 @@ export default function webToolsExtension(pi: ExtensionAPI) {
 
 			const maxChars = Math.min(Math.max(Math.round(params.max_chars ?? 6000), 500), 40_000);
 			try {
-				const page = await fetchPage(url, signal);
+				const page = await fetchPage(url, { signal });
 				if (page.status >= 400) {
 					return {
-						content: [{ type: "text", text: `ERROR: HTTP ${page.status} for ${page.url}. The page is not readable; drop this source.` }],
+						content: [{ type: "text", text: `ERROR: ${statusMessage(page.url, page.status)}` }],
 						details: { url: page.url, ok: false, status: page.status },
 					};
 				}
-
-				const isHtml = /html|xml/i.test(page.contentType) || /^\s*<(!doctype|html)/i.test(page.body);
-				if (/application\/pdf/i.test(page.contentType)) {
+				if (looksLikePdf(page.contentType, page.body)) {
 					return {
-						content: [{ type: "text", text: `ERROR: ${page.url} is a PDF, which this tool cannot read. Find an HTML version of the information.` }],
+						content: [
+							{
+								type: "text",
+								text: `ERROR: ${page.url} is a PDF, which this tool cannot read. Find an HTML version (arXiv papers: try arxiv.org/abs/... or ar5iv.labs.arxiv.org/html/...).`,
+							},
+						],
 						details: { url: page.url, ok: false, pdf: true },
 					};
 				}
 
-				const title = isHtml ? firstMatch(page.body, /<title[^>]*>([\s\S]*?)<\/title>/i) : undefined;
-				const text = (isHtml ? htmlToText(page.body) : page.body.trim()).replace(/\n{3,}/g, "\n\n");
+				const html = isHtml(page.contentType, page.body);
+				const title = html ? extractTitle(page.body) : undefined;
+				const text = (html ? htmlToText(page.body) : page.body.trim()).replace(/\n{3,}/g, "\n\n");
 				if (!text) {
 					return {
-						content: [{ type: "text", text: `ERROR: ${page.url} returned no readable text (${page.contentType || "unknown type"}).` }],
+						content: [
+							{
+								type: "text",
+								text: `ERROR: ${page.url} returned no readable text (${page.contentType || "unknown type"}). The page probably needs JavaScript; drop this source. ${FAILURE_HINT}`,
+							},
+						],
 						details: { url: page.url, ok: false, empty: true },
 					};
 				}
 
-				const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}\n\n[truncated: showing ${maxChars} of ${text.length} characters]` : text;
-				const header = [`URL: ${page.url}`, title ? `TITLE: ${title}` : undefined, `TYPE: ${page.contentType || "unknown"}`]
+				const clip = clipText(text, maxChars);
+				const header = [
+					`URL: ${page.url}`,
+					title ? `TITLE: ${title}` : undefined,
+					`TYPE: ${page.contentType || "unknown"}`,
+					page.truncated ? `NOTE: response body capped at ${Math.round(MAX_BYTES / 1_000_000)} MB while downloading` : undefined,
+				]
 					.filter(Boolean)
 					.join("\n");
 				return {
-					content: [{ type: "text", text: `${header}\n\n${clipped}` }],
-					details: { url: page.url, ok: true, status: page.status, title, chars: text.length, truncated: clipped !== text },
+					content: [{ type: "text", text: `${header}\n\n${clip.text}` }],
+					details: {
+						url: page.url,
+						ok: true,
+						status: page.status,
+						title,
+						chars: text.length,
+						truncated: clip.truncated,
+					},
 				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
