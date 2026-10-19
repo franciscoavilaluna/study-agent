@@ -7,11 +7,14 @@ This project is a **pi study setup**. When someone uses it, follow `skills/study
 All learner state is written **relative to the current working directory** (the folder pi was launched in), never inside this setup repo:
 
 ```
-learner/profile.md
-learner/events.jsonl
+learner/profile.md              general layer: how this person learns, no subject content
+learner/topics/<topic>.md       topic layer: one file per subject
+learner/events.jsonl            raw append-only log
 <topic>/plan.md
 <topic>/exercises/<concept>.md
 ```
+
+Keep the two `learner/` layers separate: subject content (formulas, node names, vocabulary, error values) never goes into `learner/profile.md`, and general claims about how the person learns are earned with the evidence marks described in the skill. A project may already have its own layout for plans and weakness registries; follow the project's `AGENTS.md` when it defines one, and record the mapping in the topic dossier.
 
 ## If this is the working directory
 

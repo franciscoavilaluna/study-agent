@@ -2,14 +2,16 @@
 
 A [pi](https://github.com/earendil-works/pi) setup for **learning by practice**. It is a config package, not a course: it teaches whatever you ask it to, in whatever folder you launch pi from.
 
-Derived from [amosblomqvist/learn](https://github.com/amosblomqvist/learn), extended with Typst exercise files, a learner profile, and Linux support for the visualization tools.
+Derived from [amosblomqvist/learn](https://github.com/amosblomqvist/learn), extended with Typst exercise files, a learner profile split into a general layer and per-subject dossiers, and Linux support for the visualization tools.
+
+It works for any subject: quantitative ones get exercises and error fingerprints, conceptual ones get argument-and-transfer questions, and the same profile accumulates across all of them.
 
 ## What's in it
 
 | Path | What it does |
 |---|---|
-| `skills/study/SKILL.md` | The teaching process: map → plan → teach, with a hard mastery gate |
-| `skills/study/templates.md` | Exact formats for `plan.md`, `events.jsonl`, `profile.md`, exercise files |
+| `skills/study/SKILL.md` | The teaching process: map → plan → teach, a hard mastery gate, and the checks that run after every answer |
+| `skills/study/templates.md` | Exact formats for `plan.md`, `events.jsonl`, and the two profile layers |
 | `skills/study/typst-rules.md` | LaTeX → Typst cheat sheet (all math is Typst, never LaTeX) |
 | `skills/study/study.typ` | Typst preamble: `#exercise`, `#mcq`, `#hint`, `#predict` |
 | `extensions/quiz.ts` | Graded multiple-choice with instant ✓/✗ feedback |
@@ -103,6 +105,25 @@ Teach me Bayesian updating
 
 or `resume Fourier`, `review probability`, `quiz me on Taylor series`.
 
+### Learner memory: two layers
+
+The agent keeps what it learns about you in **two separate files**, on purpose:
+
+| file | holds | contains subject matter? |
+|---|---|---|
+| `learner/profile.md` | how you learn: what works, what derails you, how you answer, your energy | **never** |
+| `learner/topics/<topic>.md` | one subject: node map, open gaps, the cards that unblocked you, the names you did not know, the exact wrong answers you produce | yes |
+
+The point is that the profile survives a change of subject. A rule like "always run the bound check before answering" is worth keeping when you move from statistics to circuits; "confuses $sigma^2$ with $sigma$" is not.
+
+General claims carry an evidence mark, because a *wrong* general rule costs you in every later subject:
+
+- *(no mark)* — seen in several sessions or in more than one subject
+- `(once)` — seen once; kept, but not built on
+- `[1 topic]` — single-subject evidence, assumed to transfer but unproven
+
+A claim that fails in a second subject is marked `[contradicted in <topic>]` rather than deleted. When the agent cannot tell whether something transfers, it stays in the topic dossier.
+
 ### The loop
 
 1. **Phase 1 — map.** The agent quizzes you along every strand the topic depends on, binary-searching for the *edge* of what you know. All-correct is treated as too easy; it goes harder.
@@ -149,4 +170,8 @@ Without the subagent layer the main session still teaches and quizzes; you just 
 
 ## Customizing
 
-The skill is written for one learner. Edit `skills/study/SKILL.md` — especially "My rules" and the mastery gate — to match how you actually learn.
+The skill is written for one learner. Edit `skills/study/SKILL.md` — especially "My rules", "The check that comes after every answer" and the mastery gate — to match how you actually learn.
+
+Your own accumulated evidence lives in your notes folder, not in this repo (`learner/` and `*/plan.md` are gitignored). Edit `learner/profile.md` freely: delete anything that does not describe you. The agent rewrites it from logged events, so if you disagree with a line, say so — the log is the record it argues from.
+
+To use a different layout for plans and weakness registries, describe the mapping in the project's own `AGENTS.md`; the skill follows the project when it defines one.
